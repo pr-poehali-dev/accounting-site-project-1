@@ -8,7 +8,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import Icon from '@/components/ui/icon';
+import * as XLSX from 'xlsx';
 
 interface Equipment {
   id: string;
@@ -40,6 +42,19 @@ const Index = () => {
     { name: 'HR Отдел', ipRange: '192.168.3.1-50', equipmentCount: 5, usedIPs: [] },
     { name: 'Отдел продаж', ipRange: '192.168.4.1-50', equipmentCount: 15, usedIPs: ['192.168.4.2', '192.168.4.3'] },
   ]);
+
+  // Состояние формы добавления оборудования
+  const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
+  const [newEquipment, setNewEquipment] = useState({
+    department: '',
+    address: '',
+    inventoryNumber: '',
+    fullName: '',
+    ipAddress: '',
+    hddNumber: '',
+    macAddress: ''
+  });
+  const [ipValidation, setIpValidation] = useState({ isValid: true, message: '' });
 
   // Имитация данных оборудования
   useEffect(() => {
@@ -79,12 +94,164 @@ const Index = () => {
     }
   };
 
-  const validateIPAddress = (ip: string, departmentName: string): boolean => {
-    const dept = departments.find(d => d.name === departmentName);
-    if (!dept) return false;
+  // Функции валидации и управления формой
+  const validateIPAddress = (ip: string, departmentName: string) => {
+    // Проверка формата IP
+    const ipRegex = /^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
     
-    // Проверяем, что IP не используется в этом отделе
-    return !dept.usedIPs.includes(ip);
+    if (!ipRegex.test(ip)) {
+      return { isValid: false, message: 'Неверный формат IP-адреса' };
+    }
+
+    const dept = departments.find(d => d.name === departmentName);
+    if (!dept) {
+      return { isValid: false, message: 'Подразделение не найдено' };
+    }
+    
+    // Проверяем диапазон IP для подразделения
+    const [rangeStart, rangeEnd] = dept.ipRange.split('-');
+    const ipParts = rangeStart.split('.');
+    const baseIP = ipParts.slice(0, 3).join('.');
+    const startNum = parseInt(ipParts[3]);
+    const endNum = parseInt(rangeEnd);
+    const currentIpParts = ip.split('.');
+    const currentBase = currentIpParts.slice(0, 3).join('.');
+    const currentNum = parseInt(currentIpParts[3] || '0');
+    
+    if (currentBase !== baseIP || currentNum < startNum || currentNum > endNum) {
+      return { isValid: false, message: `IP должен быть в диапазоне ${dept.ipRange}` };
+    }
+    
+    // Проверяем, что IP не используется
+    if (dept.usedIPs.includes(ip)) {
+      return { isValid: false, message: 'Данный IP-адрес уже используется в подразделении' };
+    }
+
+    return { isValid: true, message: 'IP-адрес доступен' };
+  };
+
+  const validateMACAddress = (mac: string) => {
+    const macRegex = /^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/;
+    return macRegex.test(mac);
+  };
+
+  const handleIPChange = (value: string) => {
+    setNewEquipment(prev => ({ ...prev, ipAddress: value }));
+    
+    if (value && newEquipment.department) {
+      const validation = validateIPAddress(value, newEquipment.department);
+      setIpValidation(validation);
+    } else {
+      setIpValidation({ isValid: true, message: '' });
+    }
+  };
+
+  const handleDepartmentChange = (value: string) => {
+    setNewEquipment(prev => ({ ...prev, department: value }));
+    
+    if (newEquipment.ipAddress && value) {
+      const validation = validateIPAddress(newEquipment.ipAddress, value);
+      setIpValidation(validation);
+    }
+  };
+
+  const handleAddEquipment = () => {
+    // Проверяем все поля
+    if (!newEquipment.department || !newEquipment.address || !newEquipment.inventoryNumber || 
+        !newEquipment.fullName || !newEquipment.ipAddress || !newEquipment.hddNumber || !newEquipment.macAddress) {
+      alert('Заполните все обязательные поля');
+      return;
+    }
+
+    // Проверяем валидность IP и MAC
+    const ipValidation = validateIPAddress(newEquipment.ipAddress, newEquipment.department);
+    if (!ipValidation.isValid) {
+      alert(ipValidation.message);
+      return;
+    }
+
+    if (!validateMACAddress(newEquipment.macAddress)) {
+      alert('Неверный формат MAC-адреса');
+      return;
+    }
+
+    // Добавляем оборудование
+    const newItem: Equipment = {
+      id: Date.now().toString(),
+      ...newEquipment
+    };
+
+    setEquipment(prev => [...prev, newItem]);
+
+    // Обновляем счетчик и используемые IP в подразделении
+    setDepartments(prev => prev.map(dept => 
+      dept.name === newEquipment.department 
+        ? { 
+            ...dept, 
+            equipmentCount: dept.equipmentCount + 1,
+            usedIPs: [...dept.usedIPs, newEquipment.ipAddress]
+          }
+        : dept
+    ));
+
+    // Сбрасываем форму
+    setNewEquipment({
+      department: '',
+      address: '',
+      inventoryNumber: '',
+      fullName: '',
+      ipAddress: '',
+      hddNumber: '',
+      macAddress: ''
+    });
+    setIpValidation({ isValid: true, message: '' });
+    setIsAddDialogOpen(false);
+  };
+
+  const exportToExcel = (reportType: string) => {
+    let data: any[] = [];
+    let filename = '';
+
+    switch (reportType) {
+      case 'departments':
+        data = departments.map(dept => ({
+          'Подразделение': dept.name,
+          'IP Диапазон': dept.ipRange,
+          'Количество оборудования': dept.equipmentCount,
+          'Используемые IP': dept.usedIPs.join(', ') || 'Не используются'
+        }));
+        filename = 'Отчет_по_подразделениям.xlsx';
+        break;
+      
+      case 'equipment':
+        data = equipment.map(item => ({
+          'Подразделение': item.department,
+          'Адрес': item.address,
+          'Инвентарный номер': item.inventoryNumber,
+          'ФИО ответственного': item.fullName,
+          'IP-адрес': item.ipAddress,
+          'Номер НЖМД': item.hddNumber,
+          'MAC-адрес': item.macAddress
+        }));
+        filename = 'Отчет_по_оборудованию.xlsx';
+        break;
+      
+      case 'ip':
+        data = departments.flatMap(dept => 
+          dept.usedIPs.map(ip => ({
+            'Подразделение': dept.name,
+            'IP-адрес': ip,
+            'Статус': 'Используется'
+          }))
+        );
+        filename = 'Отчет_использование_IP.xlsx';
+        break;
+    }
+
+    const worksheet = XLSX.utils.json_to_sheet(data);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Отчет');
+    XLSX.writeFile(workbook, filename);
   };
 
   if (!isLoggedIn) {
@@ -387,7 +554,7 @@ const Index = () => {
           <TabsContent value="equipment" className="space-y-6">
             <div className="flex justify-between items-center">
               <h2 className="text-3xl font-bold">Учет оборудования</h2>
-              <Dialog>
+              <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
                 <DialogTrigger asChild>
                   <Button>
                     <Icon name="Plus" size={16} className="mr-2" />
@@ -400,48 +567,88 @@ const Index = () => {
                   </DialogHeader>
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
-                      <Label htmlFor="department">Подразделение</Label>
-                      <Select>
+                      <Label htmlFor="department">Подразделение *</Label>
+                      <Select value={newEquipment.department} onValueChange={handleDepartmentChange}>
                         <SelectTrigger>
                           <SelectValue placeholder="Выберите подразделение" />
                         </SelectTrigger>
                         <SelectContent>
                           {departments.map((dept, index) => (
                             <SelectItem key={index} value={dept.name}>
-                              {dept.name}
+                              {dept.name} (IP: {dept.ipRange})
                             </SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
                     </div>
                     <div className="space-y-2">
-                      <Label htmlFor="address">Адрес</Label>
-                      <Input placeholder="Кабинет 101" />
+                      <Label htmlFor="address">Адрес *</Label>
+                      <Input 
+                        placeholder="Кабинет 101" 
+                        value={newEquipment.address}
+                        onChange={(e) => setNewEquipment(prev => ({ ...prev, address: e.target.value }))}
+                      />
                     </div>
                     <div className="space-y-2">
-                      <Label htmlFor="inventoryNumber">Инвентарный номер</Label>
-                      <Input placeholder="INV001" />
+                      <Label htmlFor="inventoryNumber">Инвентарный номер *</Label>
+                      <Input 
+                        placeholder="INV001" 
+                        value={newEquipment.inventoryNumber}
+                        onChange={(e) => setNewEquipment(prev => ({ ...prev, inventoryNumber: e.target.value }))}
+                      />
                     </div>
                     <div className="space-y-2">
-                      <Label htmlFor="fullName">ФИО ответственного</Label>
-                      <Input placeholder="Иванов Иван Иванович" />
+                      <Label htmlFor="fullName">ФИО ответственного *</Label>
+                      <Input 
+                        placeholder="Иванов Иван Иванович" 
+                        value={newEquipment.fullName}
+                        onChange={(e) => setNewEquipment(prev => ({ ...prev, fullName: e.target.value }))}
+                      />
                     </div>
                     <div className="space-y-2">
-                      <Label htmlFor="ipAddress">IP-адрес</Label>
-                      <Input placeholder="192.168.1.10" />
+                      <Label htmlFor="ipAddress">IP-адрес *</Label>
+                      <Input 
+                        placeholder="192.168.1.10" 
+                        value={newEquipment.ipAddress}
+                        onChange={(e) => handleIPChange(e.target.value)}
+                        className={!ipValidation.isValid && ipValidation.message ? 'border-red-500' : ''}
+                      />
+                      {ipValidation.message && (
+                        <Alert className={ipValidation.isValid ? 'border-green-500 bg-green-50' : 'border-red-500 bg-red-50'}>
+                          <Icon name={ipValidation.isValid ? "CheckCircle2" : "AlertCircle"} size={16} />
+                          <AlertDescription className={ipValidation.isValid ? 'text-green-700' : 'text-red-700'}>
+                            {ipValidation.message}
+                          </AlertDescription>
+                        </Alert>
+                      )}
                     </div>
                     <div className="space-y-2">
-                      <Label htmlFor="hddNumber">Номер НЖМД</Label>
-                      <Input placeholder="HDD12345" />
+                      <Label htmlFor="hddNumber">Номер НЖМД *</Label>
+                      <Input 
+                        placeholder="HDD12345" 
+                        value={newEquipment.hddNumber}
+                        onChange={(e) => setNewEquipment(prev => ({ ...prev, hddNumber: e.target.value }))}
+                      />
                     </div>
                     <div className="space-y-2 col-span-2">
-                      <Label htmlFor="macAddress">MAC-адрес</Label>
-                      <Input placeholder="00:1B:44:11:3A:B7" />
+                      <Label htmlFor="macAddress">MAC-адрес *</Label>
+                      <Input 
+                        placeholder="00:1B:44:11:3A:B7" 
+                        value={newEquipment.macAddress}
+                        onChange={(e) => setNewEquipment(prev => ({ ...prev, macAddress: e.target.value.toUpperCase() }))}
+                      />
                     </div>
                   </div>
                   <div className="flex justify-end space-x-2 mt-4">
-                    <Button variant="outline">Отмена</Button>
-                    <Button>Добавить</Button>
+                    <Button variant="outline" onClick={() => setIsAddDialogOpen(false)}>
+                      Отмена
+                    </Button>
+                    <Button 
+                      onClick={handleAddEquipment}
+                      disabled={!ipValidation.isValid && ipValidation.message !== ''}
+                    >
+                      Добавить оборудование
+                    </Button>
                   </div>
                 </DialogContent>
               </Dialog>
@@ -501,7 +708,7 @@ const Index = () => {
           <TabsContent value="reports" className="space-y-6">
             <div className="flex justify-between items-center">
               <h2 className="text-3xl font-bold">Генерация отчетов</h2>
-              <Button>
+              <Button onClick={() => exportToExcel('equipment')}>
                 <Icon name="Download" size={16} className="mr-2" />
                 Экспорт в Excel
               </Button>
@@ -519,7 +726,7 @@ const Index = () => {
                   <p className="text-sm text-muted-foreground mb-4">
                     Сводный отчет по всем подразделениям с количеством оборудования и использованием IP
                   </p>
-                  <Button variant="outline" className="w-full">
+                  <Button variant="outline" className="w-full" onClick={() => exportToExcel('departments')}>
                     Создать отчет
                   </Button>
                 </CardContent>
@@ -536,7 +743,7 @@ const Index = () => {
                   <p className="text-sm text-muted-foreground mb-4">
                     Детальный отчет по каждой единице оборудования с техническими характеристиками
                   </p>
-                  <Button variant="outline" className="w-full">
+                  <Button variant="outline" className="w-full" onClick={() => exportToExcel('equipment')}>
                     Создать отчет
                   </Button>
                 </CardContent>
@@ -553,7 +760,7 @@ const Index = () => {
                   <p className="text-sm text-muted-foreground mb-4">
                     Анализ использования IP-адресов по подразделениям и свободные адреса
                   </p>
-                  <Button variant="outline" className="w-full">
+                  <Button variant="outline" className="w-full" onClick={() => exportToExcel('ip')}>
                     Создать отчет
                   </Button>
                 </CardContent>
